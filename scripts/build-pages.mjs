@@ -3,6 +3,7 @@ import { DEFAULT_SERVICES, money } from '../src/domain.js';
 import { escapeHtml } from '../public/catalog-editor.js';
 
 const output = 'dist/pages';
+const agenda = 'https://studio-tatiane-carrara-agenda.grey-genet-8596.chatgpt.site/#agendar';
 const index = readFileSync('public/index.html', 'utf8');
 const bookingStart = index.indexOf(' <section id="agendar"');
 const infoStart = index.indexOf(' <section class="container section studio-info"');
@@ -27,14 +28,14 @@ const html = index.slice(0, bookingStart)
   .replace('href="/#agendar">Pular para o agendamento', 'href="#servicos">Pular para os serviços')
   .replace('href="/"', 'href="./"')
   .replace('href="/#servicos"', 'href="#servicos"')
-  .replace('<a href="/#agendar" class="btn btn-plum btn-sm">Consultar agenda</a>', '')
-  .replace('href="#agendar">Escolher meu horário', 'href="#servicos">Ver serviços')
+  .replace('href="/#agendar" class="btn btn-plum btn-sm"', `href="${agenda}" class="btn btn-plum btn-sm"`)
+  .replace('href="#agendar">Escolher meu horário', `href="${agenda}">Escolher meu horário`)
   .replace('<p>Selecione um ou mais serviços.<br>O tempo de cada cuidado será somado.</p>', '')
   .replace('<p>Carregando serviços…</p>', catalog)
   .replace('<div id="selection-total" class="selection-total" aria-live="polite"></div><a href="#agendar" class="btn btn-plum mt-3">Consultar horários para minha seleção</a>', '')
   .replace(/(href|src)="\/(?=(?:images\/|vendor\/|styles\.css))/g, '$1="./')
   + index.slice(infoStart, clientEnd)
-    .replace('<h3>Você escolhe. O Studio confirma.</h3><p>Os serviços são analisados individualmente. Confira no acompanhamento quais foram aprovados e o horário final do atendimento.</p>', '<h3>Agendamentos</h3><p>A agenda e a consulta de orçamentos estão indisponíveis neste site.</p>')
+    .replace('<h3>Você escolhe. O Studio confirma.</h3><p>Os serviços são analisados individualmente. Confira no acompanhamento quais foram aprovados e o horário final do atendimento.</p>', `<h3>Agendamentos</h3><a href="${agenda}">Consultar horários e solicitar orçamento</a>`)
   + '\n </main>\n <footer class="footer"><div class="container">Studio Tatiane Carrara</div></footer>\n</body></html>\n';
 
 mkdirSync(output, { recursive: true });
