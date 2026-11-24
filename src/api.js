@@ -1,5 +1,5 @@
 import {DEFAULT_SERVICES,ZONE,today,validDate,workingDay,future,slots,totals} from './domain.js';
-import {notificationStatement,dispatchNotification,whatsappConfigured} from './notifications.js';
+import {notificationStatement,listManualMessages,markManualMessage,queueDueReminders} from './notifications.js';
 const json=(data,status=200)=>Response.json(data,{status,headers:{'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
 const fail=(message,status=400)=>{throw Object.assign(new Error(message),{status});};
 const text=(x,max=150)=>typeof x==='string'?x.trim().slice(0,max):'';
@@ -13,6 +13,20 @@ function selectServices(ids,catalog){
 }
 function validateInterval(date,start,duration){if(!validDate(date)||!workingDay(date)||!Number.isInteger(start)||start%15||!Number.isInteger(duration)||duration<15||duration%15||start<540||start+duration>1080||!future(date,start))fail('Selecione um horário futuro de terça a sábado, entre 9h e 18h, com tempo para todos os serviços.');}
 function contact(body){const name=text(body.name,80),phone=text(body.phone,25).replace(/\D/g,'');if(!name)fail('Informe seu nome.');if(!/^(?:55)?\d{10,11}$/.test(phone))fail('Informe um telefone com DDD.');return {name,phone};}
+function manualAppointment(body,catalog,kind){
+ const date=text(body.date,10),start=Number(body.start);
+ const selected=kind==='block'?[]:selectServices(body.services,catalog);
+ const total=totals(selected),duration=kind==='block'?Number(body.duration):total.duration;
+ validateInterval(date,start,duration);
+ const {name,phone}=kind==='block'?{name:'',phone:''}:contact(body);
+ return {date,start,end:start+duration,kind,serviceId:selected[0]?.id||null,serviceName:kind==='block'?'Horário bloqueado':selected.map(s=>s.name).join(' + '),price:total.price,name,phone,services:selected};
+}
+function appointmentValues({date,start,end,kind,serviceId,serviceName,price,name,phone,services}){
+ return [date,start,end,kind,serviceId,serviceName,price,name,phone,JSON.stringify(services)];
+}
+function insertAppointment(db,record,id,createdAt,consentAt=null){
+ return db.prepare('INSERT INTO appointments(date,start,end,kind,service_id,service_name,price,client_name,client_phone,services_json,id,created_at,whatsapp_consent_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(...appointmentValues(record),id,createdAt,consentAt);
+}
 function appointment(a){return {...a,services:a.services_json?JSON.parse(a.services_json):a.kind==='appointment'?[{id:a.service_id,name:a.service_name,duration:a.end-a.start,price:a.price}]:[]};}
 function quote(q){const {token_hash,...safe}=q;return {...safe,services:JSON.parse(q.services_json)};}
 async function findQuote(db,id){return (await db.prepare('SELECT * FROM quotes WHERE id=?').bind(id).all()).results[0];}
@@ -24,7 +38,7 @@ export async function api(request,env){
  if(request.method==='POST'&&request.headers.get('origin')&&request.headers.get('origin')!==u.origin)return json({error:'Origem não permitida.'},403);
  const admin=p.startsWith('/api/admin');
  if(admin){if(!env.ADMIN_KEY)return json({error:'A chave administrativa não foi configurada no servidor.'},503);if(!(await safeEqual(request.headers.get('authorization')||'','Bearer '+env.ADMIN_KEY)))return json({error:'Chave de acesso inválida.'},401);}
- let body={};if(request.method==='POST'){if(Number(request.headers.get('content-length')||0)>16000)fail('Dados muito extensos.',413);const raw=await request.text();if(raw.length>16000)fail('Dados muito extensos.',413);try{body=JSON.parse(raw);}catch{fail('Dados inválidos.');}if(!body||typeof body!=='object'||Array.isArray(body))fail('Dados inválidos.');}
+ let body={};if(request.method==='POST'){const limit=p==='/api/admin/appointments'?131072:16000;if(Number(request.headers.get('content-length')||0)>limit)fail('Dados muito extensos.',413);const raw=await request.text();if(raw.length>limit)fail('Dados muito extensos.',413);try{body=JSON.parse(raw);}catch{fail('Dados inválidos.');}if(!body||typeof body!=='object'||Array.isArray(body))fail('Dados inválidos.');}
  const config=await settings(db);
  if(p==='/api/catalog'&&request.method==='GET')return json({...config,today:today(),timezone:ZONE});
  if(p==='/api/availability'&&request.method==='GET'){
@@ -66,17 +80,21 @@ export async function api(request,env){
   const results=await db.batch([
    db.prepare("UPDATE quotes SET cancelled_at=?,cancelled_by='client',cancellation_reason=? WHERE id=? AND cancelled_at IS NULL").bind(now,reason,q.id),
    db.prepare("UPDATE appointments SET status='cancelled',cancelled_at=?,cancelled_by='client',cancellation_reason=? WHERE quote_id=? AND status='confirmed' AND EXISTS(SELECT 1 FROM quotes WHERE id=? AND cancelled_at=?)").bind(now,reason,q.id,q.id,now),
-   notificationStatement(db,env,{id:eventId,event:'cancellation',q,a,by:'client',reason,guardSql:'EXISTS(SELECT 1 FROM quotes WHERE id=? AND cancelled_at=?)',guardValues:[q.id,now]})
+   notificationStatement(db,{id:eventId,event:'cancellation',q,a:a?{...a,client_phone:q.client_phone}:null,by:'client',reason,guardSql:'EXISTS(SELECT 1 FROM quotes WHERE id=? AND cancelled_at=?)',guardValues:[q.id,now]})
   ]);
   if(!results[0].meta.changes)return json({ok:true,alreadyCancelled:true});
-  return json({ok:true,notification:await dispatchNotification(env,eventId)});
+  return json({ok:true,notificationPrepared:Boolean(q.whatsapp_consent)});
  }
  if(p==='/api/admin/session'&&request.method==='GET')return json({ok:true});
- if(p==='/api/admin/notifications'&&request.method==='GET'){
-  const entries=(await db.prepare('SELECT * FROM notifications ORDER BY created_at DESC LIMIT 100').all()).results.map(n=>({...n,payload:JSON.parse(n.payload_json)}));
-  return json({configured:whatsappConfigured(env),entries});
+ if(p==='/api/admin/notifications'&&request.method==='GET')return json({entries:await listManualMessages(db)});
+ if(p==='/api/admin/notifications/refresh'&&request.method==='POST'){
+  await queueDueReminders(db);
+  return json({entries:await listManualMessages(db)});
  }
- if(p==='/api/admin/notification-retry'&&request.method==='POST')return json({notification:await dispatchNotification(env,text(body.id,100))});
+ if(p==='/api/admin/notifications/sent'&&request.method==='POST'){
+  if(!await markManualMessage(db,text(body.id,100)))fail('A mensagem já não está disponível para envio.',409);
+  return json({ok:true});
+ }
  if(p==='/api/admin/quotes'&&request.method==='GET')return json((await db.prepare("SELECT * FROM quotes ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END,date,start,created_at").all()).results.map(quote));
  if(p==='/api/admin/decision'&&request.method==='POST'){
   const q=await findQuote(db,text(body.id,60));if(!q)fail('Orçamento não encontrado.',404);if(q.status!=='pending'||q.cancelled_at)fail('Este orçamento já foi analisado ou cancelado. Atualize o painel.',409);
@@ -87,11 +105,38 @@ export async function api(request,env){
   const status=selected.length===quotedServices.length?'approved':'partial',id=crypto.randomUUID();
   const insert=db.prepare("INSERT INTO appointments(id,date,start,end,kind,service_id,service_name,price,client_name,client_phone,created_at,services_json,quote_id) SELECT ?,date,start,?,'appointment',?,?,?,?,?,?,?,id FROM quotes WHERE id=? AND status='pending' AND cancelled_at IS NULL").bind(id,q.start+duration,selected[0].id,selected.map(s=>s.name).join(' + '),price,q.client_name,q.client_phone,decidedAt,JSON.stringify(selected),q.id);
   // A mesma transação grava a decisão, o atendimento e a notificação. Os gatilhos SQL rejeitam sobreposições.
-  const results=await db.batch([insert,db.prepare("UPDATE quotes SET status=?,decision_note=?,decided_at=? WHERE id=? AND status='pending' AND cancelled_at IS NULL AND EXISTS (SELECT 1 FROM appointments WHERE id=?)").bind(status,note,decidedAt,q.id,id),notificationStatement(db,env,{id:'approval:'+q.id,event:'approval',q,a:{id,date:q.date,start:q.start,end:q.start+duration,services:selected,price,client_name:q.client_name,client_phone:q.client_phone},guardSql:'EXISTS(SELECT 1 FROM appointments WHERE id=?)',guardValues:[id]})]);
-  if(!results[0].meta.changes||!results[1].meta.changes)fail('Este orçamento já foi analisado ou cancelado. Atualize o painel.',409);return json({ok:true,id,status,notification:await dispatchNotification(env,'approval:'+q.id)});
+  const results=await db.batch([insert,db.prepare("UPDATE quotes SET status=?,decision_note=?,decided_at=? WHERE id=? AND status='pending' AND cancelled_at IS NULL AND EXISTS (SELECT 1 FROM appointments WHERE id=?)").bind(status,note,decidedAt,q.id,id),notificationStatement(db,{id:'approval:'+q.id,event:'approval',q,a:{id,date:q.date,start:q.start,end:q.start+duration,services:selected,price,client_name:q.client_name,client_phone:q.client_phone},guardSql:'EXISTS(SELECT 1 FROM appointments WHERE id=?)',guardValues:[id]})]);
+  if(!results[0].meta.changes||!results[1].meta.changes)fail('Este orçamento já foi analisado ou cancelado. Atualize o painel.',409);return json({ok:true,id,status,notificationPrepared:Boolean(q.whatsapp_consent)});
  }
  if(p==='/api/admin/appointments'&&request.method==='GET'){
-  const from=u.searchParams.get('from'),to=u.searchParams.get('to');if(!validDate(from||'')||!validDate(to||'')||from>to)fail('Período inválido.');return json((await db.prepare('SELECT * FROM appointments WHERE date BETWEEN ? AND ? ORDER BY date,start').bind(from,to).all()).results.map(appointment));
+  const from=u.searchParams.get('from'),to=u.searchParams.get('to');
+  if(!validDate(from||'')||!validDate(to||'')||from>to)fail('Período inválido.');
+  const {results}=await db.prepare(`
+   SELECT a.*,EXISTS(SELECT 1 FROM notifications n WHERE n.id='manual:'||a.id) AS has_manual_confirmation
+   FROM appointments a WHERE a.date BETWEEN ? AND ? ORDER BY a.date,a.start
+  `).bind(from,to).all();
+  return json(results.map(appointment));
+ }
+ if(p==='/api/admin/appointments'&&request.method==='POST'){
+  const entries=body.appointments;
+  if(!Array.isArray(entries)||!entries.length||entries.length>10)fail('Informe de 1 a 10 atendimentos.');
+  const createdAt=new Date().toISOString();
+  const records=entries.map((entry,index)=>{
+   if(!entry||typeof entry!=='object'||Array.isArray(entry))fail(`Atendimento ${index+1}: dados inválidos.`);
+   try{return {id:crypto.randomUUID(),record:manualAppointment(entry,config.services,'appointment'),consent:entry.whatsappConsent===true};}
+   catch(e){if(e.status)fail(`Atendimento ${index+1}: ${e.message}`,e.status);throw e;}
+  });
+  const statements=records.flatMap(({id,record,consent})=>{
+   const insert=insertAppointment(db,record,id,createdAt,consent?createdAt:null);
+   if(!consent)return [insert];
+   const confirmation=notificationStatement(db,{
+    id:'manual:'+id,event:'manual_confirmation',q:{whatsapp_consent:1},
+    a:{...record,id,client_name:record.name,client_phone:record.phone}
+   });
+   return [insert,confirmation];
+  });
+  await db.batch(statements);
+  return json({ok:true,ids:records.map(({id})=>id),notificationsPrepared:records.filter(record=>record.consent).length},201);
  }
  if(p==='/api/admin/settings'&&request.method==='POST'){
   if(!Array.isArray(body.services)||body.services.length<1||body.services.length>30)fail('Informe de 1 a 30 serviços.');
@@ -103,18 +148,26 @@ export async function api(request,env){
   if(body.action==='cancel'){
    const raw=(await db.prepare('SELECT * FROM appointments WHERE id=?').bind(text(body.id,60)).all()).results[0];if(!raw)fail('Registro não encontrado.',404);
    if(raw.status==='cancelled')return json({ok:true,alreadyCancelled:true});
-   const a=appointment(raw),q=a.quote_id?await findQuote(db,a.quote_id):{id:null,whatsapp_consent:0,services_json:JSON.stringify(a.services),client_name:a.client_name,client_phone:a.client_phone,date:a.date,start:a.start},now=new Date().toISOString(),reason=text(body.reason,500),eventId='cancel:'+(q.id||a.id);
+   const a=appointment(raw),q=a.quote_id?await findQuote(db,a.quote_id):{id:null,whatsapp_consent:Boolean(a.whatsapp_consent_at),services_json:JSON.stringify(a.services),client_name:a.client_name,client_phone:a.client_phone,date:a.date,start:a.start},now=new Date().toISOString(),reason=text(body.reason,500),eventId='cancel:'+(q.id||a.id);
    const statements=[db.prepare("UPDATE appointments SET status='cancelled',cancelled_at=?,cancelled_by='professional',cancellation_reason=? WHERE id=? AND status='confirmed'").bind(now,reason,a.id)];
    if(q.id)statements.push(db.prepare("UPDATE quotes SET cancelled_at=?,cancelled_by='professional',cancellation_reason=? WHERE id=? AND EXISTS(SELECT 1 FROM appointments WHERE id=? AND cancelled_at=?)").bind(now,reason,q.id,a.id,now));
-   if(a.kind==='appointment')statements.push(notificationStatement(db,env,{id:eventId,event:'cancellation',q,a,by:'professional',reason,guardSql:'EXISTS(SELECT 1 FROM appointments WHERE id=? AND cancelled_at=?)',guardValues:[a.id,now]}));
-   await db.batch(statements);return json({ok:true,notification:a.kind==='appointment'?await dispatchNotification(env,eventId):null});
+   if(a.kind==='appointment')statements.push(notificationStatement(db,{id:eventId,event:'cancellation',q:{...q,whatsapp_consent:q.whatsapp_consent&&q.client_phone===a.client_phone},a,by:'professional',reason,guardSql:'EXISTS(SELECT 1 FROM appointments WHERE id=? AND cancelled_at=?)',guardValues:[a.id,now]}));
+   await db.batch(statements);return json({ok:true,notificationPrepared:a.kind==='appointment'&&Boolean(q.whatsapp_consent)&&q.client_phone===a.client_phone});
   }
-  const date=text(body.date,10),start=Number(body.start),kind=body.kind==='block'?'block':'appointment';
-  const selected=kind==='block'?[]:selectServices(body.services,config.services),total=totals(selected),duration=kind==='block'?Number(body.duration):total.duration;
-  validateInterval(date,start,duration);const {name,phone}=kind==='block'?{name:'',phone:''}:contact(body);
-  const id=text(body.id,60)||crypto.randomUUID(),values=[date,start,start+duration,kind,selected[0]?.id||null,kind==='block'?'Horário bloqueado':selected.map(s=>s.name).join(' + '),total.price,name,phone,JSON.stringify(selected)];
-  if(body.id){const r=await db.prepare("UPDATE appointments SET date=?,start=?,end=?,kind=?,service_id=?,service_name=?,price=?,client_name=?,client_phone=?,services_json=? WHERE id=? AND status='confirmed'").bind(...values,id).run();if(!r.meta.changes)fail('Registro não encontrado.',404);}
-  else await db.prepare('INSERT INTO appointments(date,start,end,kind,service_id,service_name,price,client_name,client_phone,services_json,id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').bind(...values,id,new Date().toISOString()).run();return json({ok:true,id});
+  const kind=body.kind==='block'?'block':'appointment';
+  const id=text(body.id,60)||crypto.randomUUID(),record=manualAppointment(body,config.services,kind);
+  if(body.id){
+   const consent=typeof body.whatsappConsent==='boolean'?Number(body.whatsappConsent):null;
+   const now=new Date().toISOString();
+   const r=await db.prepare(`UPDATE appointments SET
+    whatsapp_consent_at=CASE WHEN kind='block' OR quote_id IS NOT NULL OR ?='block' OR ?=0 THEN NULL
+      WHEN ?=1 THEN CASE WHEN client_phone=? THEN COALESCE(whatsapp_consent_at,?) ELSE ? END
+      WHEN client_phone=? THEN whatsapp_consent_at ELSE NULL END,
+    date=?,start=?,end=?,kind=?,service_id=?,service_name=?,price=?,client_name=?,client_phone=?,services_json=?
+    WHERE id=? AND status='confirmed'`).bind(kind,consent,consent,record.phone,now,now,record.phone,...appointmentValues(record),id).run();
+   if(!r.meta.changes)fail('Registro não encontrado.',404);
+  }
+  else await insertAppointment(db,record,id,new Date().toISOString()).run();return json({ok:true,id});
  }
  return json({error:'Recurso não encontrado.'},404);
  }catch(e){if(String(e.message).includes('SLOT_CONFLICT'))return json({error:'O intervalo já está ocupado por outro atendimento ou bloqueio. Escolha outro pedido ou altere a agenda.'},409);if(e.status)return json({error:e.message},e.status);console.error('API_ERROR',e.message);return json({error:'Não foi possível concluir a operação. Tente novamente.'},500);}

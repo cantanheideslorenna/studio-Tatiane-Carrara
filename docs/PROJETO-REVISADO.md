@@ -1,12 +1,10 @@
-# Atividade Prática - Estágio: requisitos revisados
+# Atividade Prática de Estágio — Requisitos do sistema
 
 ## Empresa e objetivo
 
 O Studio Tatiane Carrara atua com design de sobrancelhas, extensão de cílios e cuidados pessoais, no bairro Normília da Cunha, Vila Velha, Espírito Santo. A aplicação centraliza o catálogo, os pedidos de orçamento e a agenda, preservando o controle do gestor sobre os atendimentos confirmados.
 
 Desenvolver uma aplicação web em que a cliente selecione um ou mais serviços individualmente, consulte um dia e horário compatíveis com a soma das durações e envie um orçamento com nome e telefone. O gestor deve analisar os pedidos, escolher qual cliente ocupará o intervalo e aprovar todos ou parte dos serviços solicitados. A decisão e o agendamento serão realizados no próprio sistema.
-
-Esta revisão substitui o fluxo anterior de confirmação pelo WhatsApp. O documento PDF de origem foi preservado; os requisitos vigentes estão descritos aqui.
 
 ## Catálogo inicial
 
@@ -35,8 +33,9 @@ Os itens não são reunidos em pacotes predefinidos. Cada serviço conserva nome
 10. Recalcular duração, valor e término conforme os serviços aprovados. Os itens não aprovados encerram-se nesse pedido e não geram outra reserva.
 11. Criar o atendimento e gravar a decisão em uma única transação, com validação de conflito no banco.
 12. Mostrar no atendimento o nome e telefone da cliente, os serviços aprovados, o valor e o intervalo ocupado.
-13. Manter agenda diária, semanal e de 31 dias; permitir registros manuais com vários serviços, bloqueios, alterações e cancelamentos.
+13. Manter agenda diária, semanal e de 31 dias; permitir cadastro manual em lote com serviços por cliente, bloqueios, alterações e cancelamentos.
 14. Editar o catálogo e reunir os contatos dos atendimentos confirmados na aba Clientes.
+15. Preparar confirmações, cancelamentos e lembretes para envio manual pelo WhatsApp Business, conforme a autorização de contato.
 
 ## Regras de negócio
 
@@ -74,18 +73,16 @@ Consulte a [seção 4 com justificativas, fluxograma e dicionário de dados](TEC
 
 | Tabela | Conteúdo e finalidade |
 | --- | --- |
-| `settings` | Catálogo editável. Configuração antiga de telefone é preservada, sem uso pelo fluxo atual. |
+| `settings` | Catálogo editável. |
 | `quotes` | Protocolo, hash da chave, nome, telefone, dia, início, itens separados em JSON, duração e preço totais, situação, observação e datas da decisão. |
 | `appointments` | Intervalo confirmado ou bloqueado, contato, serviços aprovados em JSON, preço total, situação e vínculo único com o orçamento. |
-| `notifications` | Eventos de aprovação e cancelamento, estado de envio e resposta do provedor de WhatsApp. |
+| `notifications` | Mensagens de aprovação, confirmação, cancelamento e lembrete, com registro manual de envio. |
 
 Valores monetários são armazenados em centavos e horários em minutos desde meia-noite. A migração incremental `0001_quotes.sql` acrescenta os dados de orçamento sem apagar atendimentos antigos. Os gatilhos existentes continuam impedindo sobreposições. O código acompanha este documento na pasta do projeto; o README descreve execução, publicação e uso.
 
-## Validação e limites
+## Validação
 
-Dez testes automatizados cobrem soma das durações, disponibilidade, contatos, pedidos concorrentes, aprovação parcial, duas aprovações simultâneas, proteção dos dados, preservação dos valores originais, cancelamento e migração de registros antigos. O fluxo de envio e aprovação parcial também foi conferido no navegador local.
-
-A confirmação deve ser consultada no site; não há mensagens ou notificações automáticas. Não há integração WhatsApp, pagamento ou lembrete de 24 horas nesta versão. A publicação mantém sua política privada de acesso. A liberação às clientes exige alteração posterior de compartilhamento pelo proprietário.
+Os testes cobrem disponibilidade, análise de orçamentos, cadastro em lote, proteção da consulta, cancelamentos e notificações. O envio das mensagens é realizado pela profissional no WhatsApp Business.
 
 ## Referências
 
@@ -94,8 +91,4 @@ A confirmação deve ser consultada no site; não há mensagens ou notificaçõe
 - [Bootstrap](https://getbootstrap.com/docs/5.3/getting-started/download/)
 - [Cloudflare D1](https://developers.cloudflare.com/d1/worker-api/d1-database/)
 - [Node.js SQLite](https://nodejs.org/api/sqlite.html)
-
-## Revisão: cancelamento pela cliente e notificações
-
-Esta revisão substitui as restrições anteriores de cancelamento e de ausência de integração WhatsApp. O cadastro informa que o telefone será usado para aprovações, atualizações do serviço e cancelamentos e registra a autorização. A cliente pode cancelar pelo acompanhamento, com protocolo e chave, antes do início do atendimento; o gestor também pode cancelar, com motivo opcional. Ambos os fluxos liberam o horário e preservam o histórico de quem cancelou. Aprovações e cancelamentos registram uma notificação transacional, com tentativa de envio pela Meta Cloud API quando configurada. Falhas de envio não desfazem a operação da agenda. O envio real ainda depende de conectar a conta comercial e configurar credenciais e modelos. Consulte CONFIGURAR-WHATSAPP.md. Não há confirmação de entrega/leitura por webhook nesta versão. As 19 verificações automatizadas incluem envio simulado, cancelamento concorrente, proteção do protocolo e não duplicação de notificações.
 

@@ -10,7 +10,7 @@ Requer Node.js 22.13 ou superior (recomendado 24). Na pasta do projeto:
 npm start
 ```
 
-Não é necessário instalar pacotes. Bootstrap é distribuído em `public/vendor/`, com sua licença original. Crie `.env` a partir de `.env.example`, com uma chave longa em `ADMIN_KEY`. Na entrega existente, ela já foi configurada. O arquivo privado `ACESSO-ADMINISTRATIVO.txt`, na pasta superior, contém a chave de acesso. Nunca inclua esse arquivo ou `.env` no pacote de código.
+Não é necessário instalar pacotes. Bootstrap é distribuído em `public/vendor/`, com sua licença original. Crie `.env` a partir de `.env.example`, com uma chave longa em `ADMIN_KEY`. Mantenha `.env` fora do controle de versão.
 
 Abra `http://127.0.0.1:4173`. A área do gestor é `/admin`. O banco fica em `data/agenda.sqlite`. O servidor aplica as migrações locais pendentes sem apagar os registros existentes. Dados locais e hospedados são independentes. O servidor local escuta apenas em loopback.
 
@@ -22,7 +22,7 @@ Abra `http://127.0.0.1:4173`. A área do gestor é `/admin`. O banco fica em `da
 4. Guardar protocolo, chave e link privado de acompanhamento.
 5. Consultar a decisão no próprio site. A consulta apresenta os itens solicitados, os aprovados, o valor e o horário confirmado.
 
-Enviar orçamento não reserva a agenda. Podem existir pedidos pendentes concorrendo por um mesmo horário. Somente uma aprovação ocupa o intervalo, conforme os serviços efetivamente aprovados. A cliente pode cancelar pelo acompanhamento. Aprovações e cancelamentos geram notificações pelo WhatsApp, cujo envio depende da ativação da Meta Cloud API.
+Enviar orçamento não reserva a agenda. Podem existir pedidos pendentes concorrendo por um mesmo horário. Somente uma aprovação ocupa o intervalo, conforme os serviços efetivamente aprovados. A cliente pode cancelar pelo acompanhamento. Aprovações e cancelamentos preparam mensagens para envio pelo WhatsApp Business da profissional.
 
 ## Fluxo do gestor
 
@@ -33,19 +33,18 @@ Enviar orçamento não reserva a agenda. Podem existir pedidos pendentes concorr
 - **Aprovar selecionados** confirma os itens escolhidos e ocupa a agenda em uma transação. Em caso de conflito, nenhuma decisão é gravada e o pedido permanece pendente.
 - **Não aprovar orçamento** encerra o pedido sem ocupar a agenda.
 - Outros pedidos concorrentes continuam pendentes para avaliação individual; não são rejeitados automaticamente.
-- A agenda permite alterar atendimentos, cancelar, criar registros manuais com vários serviços e bloquear horários.
+- A agenda permite alterar atendimentos, cancelar, criar até 10 atendimentos em lote, com horário e serviços próprios por cliente e bloquear horários.
 - A aba **Serviços** permite editar catálogo, preços e durações. Orçamentos já enviados guardam os itens, preços e durações da solicitação.
 - A aba **Clientes** reúne nome e telefone dos atendimentos confirmados.
-
-Antes de liberar o site para clientes, cadastre os compromissos já existentes e os intervalos de pausa. A chave administrativa continua a mesma. A publicação permanece privada pelo controle de acesso da plataforma até que o proprietário altere o compartilhamento.
 
 ## Dados e proteção
 
 | Tabela | Uso |
 | --- | --- |
-| `settings` | Catálogo configurado; configuração antiga de telefone preservada, sem uso no fluxo atual |
+| `settings` | Catálogo configurado |
 | `quotes` | Nome, telefone, data, início, itens separados em JSON, totais, decisão, observação e hash da chave de consulta |
-| `appointments` | Atendimento aprovado ou bloqueio, intervalo, nome/telefone e itens aprovados; vínculo único com o orçamento |
+| `appointments` | Atendimentos e bloqueios, intervalos, contatos, serviços e vínculo com orçamento |
+| `notifications` | Mensagens preparadas e registro manual de envio |
 
 Somente protocolo e chave corretos permitem consultar os detalhes de um pedido. A chave de consulta não é armazenada em texto no banco, apenas seu hash. A interface não recupera uma chave perdida: a cliente deve guardar os dados ou o link. O link usa fragmento de URL, que não é enviado como parte da requisição HTTP inicial. Não existe listagem pública de nomes e telefones. Todas as decisões exigem autorização administrativa no servidor.
 
@@ -58,9 +57,9 @@ npm test
 npm run build
 ```
 
-Dez testes cobrem expediente, fuso, soma das durações, contatos obrigatórios, itens inválidos, pedidos concorrentes, aprovação parcial, conflito entre aprovações simultâneas, preservação de orçamento quando o catálogo muda, consulta protegida, cancelamento e migração de dados anteriores. Testes usam banco em memória. Foi validado no navegador um pedido local com dois serviços e aprovação de apenas um.
+Os testes usam SQLite em memória e cobrem disponibilidade, aprovação, conflitos, cadastro em lote, cancelamento e notificações.
 
-`scripts/build.mjs` incorpora a interface e a API no Worker `dist/server/index.js`. A hospedagem declara `DB` em `.openai/hosting.json`; precisa do segredo de servidor `ADMIN_KEY`. As migrações ficam em `drizzle/`. As migrações já aplicadas não devem ser modificadas. O projeto não é publicado no GitHub; a sincronização da publicação usa o repositório privado do Sites.
+`scripts/build.mjs` gera o Worker em `dist/server/index.js`. Para hospedá-lo, vincule o banco D1 como `DB`, configure `ADMIN_KEY` como segredo e aplique as migrações em `drizzle/`.
 
 ## Estrutura
 
@@ -74,7 +73,7 @@ Dez testes cobrem expediente, fuso, soma das durações, contatos obrigatórios,
 
 ## Limites
 
-A decisão continua disponível no acompanhamento. Notificações automáticas estão implementadas via Meta Cloud API, mas aguardam conexão da conta e credenciais para envio real. Clientes podem cancelar pedidos e atendimentos futuros com protocolo e chave. A profissional pode cancelar com motivo opcional. Não são implementados pagamento, lembretes ou contas de clientes. Remarcações são executadas pelo gestor na agenda. Cada serviço é escolhido uma vez por pedido e executado sequencialmente; suas durações são somadas.
+A decisão continua disponível no acompanhamento. A aba Notificações prepara confirmações, avisos de cancelamento e lembretes das próximas 24 horas para envio pelo WhatsApp Business. Clientes podem cancelar pedidos e atendimentos futuros com protocolo e chave. A profissional pode cancelar com motivo opcional. O sistema não inclui pagamento nem contas de clientes. Remarcações são executadas pelo gestor na agenda. Cada serviço é escolhido uma vez por pedido e executado sequencialmente; suas durações são somadas.
 
 ## Referências técnicas
 
@@ -85,5 +84,5 @@ A decisão continua disponível no acompanhamento. Notificações automáticas e
 
 ## Cancelamentos e WhatsApp
 
-Consulte docs/CONFIGURAR-WHATSAPP.md. O cadastro apresenta aviso de uso do telefone e exige autorização explícita para atualizações. A aba Notificações distingue mensagens pendentes, falhas e aceite pela API, sem afirmar entrega. A migração 0002_notifications.sql preserva os registros e não inventa autorização para clientes antigos. A suíte possui 19 testes; os testes de envio usam respostas simuladas e não enviam mensagens reais.
+Consulte `docs/CONFIGURAR-WHATSAPP.md`. O cadastro registra a autorização de contato. A profissional envia a mensagem pelo WhatsApp Business e registra o envio no painel. A migração `0004_manual_whatsapp` preserva o histórico e acrescenta a data do registro manual.
 

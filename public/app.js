@@ -1,4 +1,4 @@
-import {money,time,totals} from '/domain.js';
+import {money,time,totals,slots} from '/domain.js';
 import {escapeHtml as esc,serviceEditor} from '/catalog-editor.js';
 const $=id=>document.getElementById(id);
 const isAdmin=location.pathname==='/admin',labels={pending:'Aguardando análise',approved:'Aprovado integralmente',partial:'Aprovado parcialmente',rejected:'Não aprovado'};
@@ -22,7 +22,7 @@ function renderTimes(){const items=selected(),total=totals(items);$('selected-da
 for(const [id,offset] of [['prev-month',-1],['next-month',1]])$(id).onclick=()=>{const [y,m]=month.split('-').map(Number),d=new Date(y,m-1+offset,1);month=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');date=null;selectedTime=null;submission=null;renderTimes();loadCalendar();};
 for(const id of ['client-name','client-phone','whatsapp-consent'])$(id).oninput=()=>submission=null;
 $('request-panel').onsubmit=async e=>{e.preventDefault();$('request-button').disabled=true;$('request-error').textContent='';submission??={id:crypto.randomUUID(),token:crypto.randomUUID()};try{const r=await api('request',{...submission,services:selectedIds,date,time:selectedTime,name:$('client-name').value,phone:$('client-phone').value,whatsappConsent:$('whatsapp-consent').checked});$('status-id').value=r.id;$('status-token').value=r.token;const link=location.origin+'/#pedido='+r.id+'.'+r.token;$('request-success').hidden=false;$('request-success').innerHTML=`<h3>Orçamento recebido</h3><p>Seu pedido está aguardando análise. Guarde os dados abaixo para consultar a aprovação.</p><p><strong>Protocolo</strong><br><code>${r.id}</code></p><p><strong>Chave de consulta</strong><br><code>${r.token}</code></p><a href="${esc(link)}">Acompanhar este orçamento</a><p class="muted mt-2">O horário ainda não está reservado. Guarde o link em local privado.</p>`;selectedTime=null;renderTimes();await checkStatus();$('request-success').scrollIntoView({behavior:'smooth'});toast('Orçamento enviado para análise.');}catch(e){$('request-error').textContent=e.message;}finally{$('request-button').disabled=false;}};
-function notificationNotice(n){if(!n)return '';return n.status==='accepted'?' Mensagem aceita pela API do WhatsApp.':n.status==='awaiting_config'?' Notificação aguardando a configuração do WhatsApp.':n.status==='skipped_no_consent'?' Sem envio: autorização de WhatsApp não registrada.':n.status==='failed'?' Não foi possível enviar a mensagem; o gestor pode conferir as notificações.':n.status==='unknown'||n.status==='sending'?' Envio ainda sem confirmação da API.':'';}
+function notificationNotice(prepared){return prepared?' Mensagem pronta na aba Notificações.':'';}
 async function checkStatus(){
  $('status-error').textContent='';try{
  const q=await api('quote-status',{id:$('status-id').value.trim(),token:$('status-token').value.trim()}),a=q.appointment;statusQuote=q;
@@ -43,16 +43,152 @@ $('login-form').onsubmit=async e=>{e.preventDefault();key=$('admin-key').value.t
 async function openAdmin(){$('login-form').hidden=true;$('admin-content').hidden=false;$('logout').hidden=false;$('admin-date').value=config.today;renderEditor();await loadAppointments();await loadQuotes();}
 document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-tab]').forEach(x=>x.classList.toggle('active',x===b));for(const t of ['agenda','quotes','settings','clients','notifications'])$('tab-'+t).hidden=t!==b.dataset.tab;if(b.dataset.tab==='quotes')loadQuotes();if(b.dataset.tab==='notifications')loadNotifications();if(b.dataset.tab==='clients')loadClients();});
 async function loadAppointments(){const from=$('admin-date').value;if(!from)return;$('agenda-error').textContent='';try{appointments=await api(`admin/appointments?from=${from}&to=${endDate(from,Number($('admin-period').value)-1)}`,null,true);renderAppointments();}catch(e){$('agenda-error').textContent=e.message;}}
-function renderAppointments(){const active=appointments.filter(a=>a.status==='confirmed'),attended=active.filter(a=>a.kind==='appointment');$('agenda-stats').innerHTML=`<div class="stat"><strong>${attended.length}</strong>Atendimentos</div><div class="stat"><strong>${active.filter(a=>a.kind==='block').length}</strong>Bloqueios</div><div class="stat"><strong>${money(attended.reduce((s,a)=>s+a.price,0))}</strong>Valor previsto no período</div>`;$('appointments').innerHTML=appointments.length?appointments.map(a=>`<article class="appointment-row ${a.status==='cancelled'?'cancelled':''}"><div><p class="date-label">${formatDate(a.date)} · ${time(a.start)} a ${time(a.end)}</p><h3>${a.kind==='block'?'Horário bloqueado':esc(a.client_name)}</h3><p>${esc(a.client_phone)}</p>${itemList(a.services)}${a.kind==='appointment'?`<p>Total: ${money(a.price)}</p>`:''}</div><div class="appointment-actions">${a.status==='confirmed'?`<span class="status-label">${a.kind==='block'?'Bloqueado':'Confirmado'}</span><button class="btn btn-outline-plum" data-edit="${a.id}">Alterar</button><button class="btn btn-outline-plum" data-cancel="${a.id}">${a.kind==='block'?'Liberar':'Cancelar'}</button>`:'<span class="status-label">Cancelado</span>'}</div></article>`).join(''):'<div class="empty-state">Nenhum atendimento ou bloqueio neste período.<br>Analise os pedidos na aba Orçamentos ou registre um atendimento.</div>';document.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>editAppointment(appointments.find(a=>a.id===b.dataset.edit)));document.querySelectorAll('[data-cancel]').forEach(b=>b.onclick=()=>{cancelId=b.dataset.cancel;cancelByClient=false;$('cancel-reason').value='';$('cancel-error').textContent='';$('cancel-dialog').showModal();});}
+function renderAppointments(){const active=appointments.filter(a=>a.status==='confirmed'),attended=active.filter(a=>a.kind==='appointment');$('agenda-stats').innerHTML=`<div class="stat"><strong>${attended.length}</strong>Atendimentos</div><div class="stat"><strong>${active.filter(a=>a.kind==='block').length}</strong>Bloqueios</div><div class="stat"><strong>${money(attended.reduce((s,a)=>s+a.price,0))}</strong>Valor previsto no período</div>`;$('appointments').innerHTML=appointments.length?appointments.map(a=>`<article class="appointment-row ${a.status==='cancelled'?'cancelled':''}"><div><p class="date-label">${formatDate(a.date)} · ${time(a.start)} a ${time(a.end)}</p><h3>${a.kind==='block'?'Horário bloqueado':esc(a.client_name)}</h3><p>${esc(a.client_phone)}</p>${itemList(a.services)}${a.kind==='appointment'?`<p>Total: ${money(a.price)}</p>`:''}</div><div class="appointment-actions">${a.status==='confirmed'?`<span class="status-label">${a.kind==='block'?'Bloqueado':'Confirmado'}</span>${a.whatsapp_consent_at&&a.has_manual_confirmation?`<button class="btn btn-outline-plum" data-open-confirmation="${esc(a.id)}">Confirmação pelo WhatsApp</button>`:''}<button class="btn btn-outline-plum" data-edit="${a.id}">Alterar</button><button class="btn btn-outline-plum" data-cancel="${a.id}">${a.kind==='block'?'Liberar':'Cancelar'}</button>`:'<span class="status-label">Cancelado</span>'}</div></article>`).join(''):'<div class="empty-state">Nenhum atendimento ou bloqueio neste período.<br>Analise os pedidos na aba Orçamentos ou registre um atendimento.</div>';document.querySelectorAll('[data-open-confirmation]').forEach(button=>button.onclick=()=>{
+  notificationFocus='manual:'+button.dataset.openConfirmation;
+  document.querySelector('[data-tab="notifications"]').click();
+ });document.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>editAppointment(appointments.find(a=>a.id===b.dataset.edit)));document.querySelectorAll('[data-cancel]').forEach(b=>b.onclick=()=>{cancelId=b.dataset.cancel;cancelByClient=false;$('cancel-reason').value='';$('cancel-error').textContent='';$('cancel-dialog').showModal();});}
 $('refresh-agenda').onclick=loadAppointments;$('admin-date').onchange=loadAppointments;$('admin-period').onchange=loadAppointments;
-$('new-appointment').onclick=()=>editAppointment();$('new-block').onclick=()=>editAppointment(null,'block');
-function editAppointment(a=null,kind='appointment'){kind=a?.kind||kind;$('appointment-form').reset();$('appointment-error').textContent='';$('edit-id').value=a?.id||'';$('edit-kind').value=kind;$('dialog-title').textContent=kind==='block'?'Bloquear horário':a?'Alterar atendimento':'Registrar atendimento';$('dialog-help').textContent=kind==='block'?'Use para pausas e compromissos.':'Selecione os serviços que serão executados neste atendimento.';$('appointment-fields').hidden=kind==='block';$('block-fields').hidden=kind!=='block';$('edit-name').required=kind==='appointment';$('edit-phone').required=kind==='appointment';$('edit-services').innerHTML=checks(config.services,a?.services.map(s=>s.id)||[],'edit-service');$('edit-services').onchange=updateEditTotal;updateEditTotal();$('edit-name').value=a?.client_name||'';$('edit-phone').value=a?.client_phone||'';$('edit-date').min=config.today;$('edit-date').value=a?.date||$('admin-date').value||config.today;$('edit-time').value=a?time(a.start):'09:00';$('edit-duration').value=a?a.end-a.start:60;$('appointment-dialog').showModal();}
+$('new-appointment').onclick=()=>{
+ $('manual-entries').replaceChildren();
+ $('manual-error').textContent='';
+ addManualEntry();
+ $('manual-dialog').showModal();
+};
+$('new-block').onclick=()=>editAppointment(null,'block');
+
+function manualServices(entry){
+ return [...entry.querySelectorAll('[data-manual-service]:checked')].map(input=>input.value);
+}
+function manualStart(entry){
+ const [hours,minutes]=entry.querySelector('[name="start"]').value.split(':').map(Number);
+ return hours*60+minutes;
+}
+function updateManualEntries(){
+ const entries=[...$('manual-entries').children];
+ entries.forEach((entry,index)=>{
+  entry.querySelector('legend').textContent=`Cliente ${index+1}`;
+  entry.querySelector('[data-remove]').hidden=entries.length===1;
+ });
+ $('add-manual').disabled=entries.length>=10;
+}
+function addManualEntry(){
+ const entries=$('manual-entries'),previous=entries.lastElementChild;
+ const entry=document.createElement('fieldset');
+ entry.className='service-edit';
+ entry.innerHTML=`
+  <legend class="form-label"></legend>
+  <div class="row g-3 mb-3">
+   <label class="col-sm-6 form-label">Nome<input name="name" class="form-control" maxlength="80" required></label>
+   <label class="col-sm-6 form-label">Telefone com DDD<input name="phone" type="tel" class="form-control" maxlength="25" required></label>
+   <label class="col-sm-6 form-label">Data<input name="date" type="date" class="form-control" required></label>
+   <label class="col-sm-6 form-label">Início<input name="start" type="time" step="900" min="09:00" max="17:45" class="form-control" required></label>
+  </div>
+  <fieldset><legend class="form-label">Serviços</legend>${checks(config.services,[],'manual-service')}</fieldset>
+  <p class="muted mt-2" data-total aria-live="polite"></p>
+  <label class="d-block mb-3"><input type="checkbox" name="whatsappConsent"> A cliente autorizou receber atualizações deste atendimento pelo WhatsApp.</label>
+  <button type="button" class="btn btn-sm btn-outline-plum" data-remove>Remover cliente</button>`;
+ const dateInput=entry.querySelector('[name="date"]'),startInput=entry.querySelector('[name="start"]');
+ dateInput.min=config.today;
+ let suggestedDate=previous?.querySelector('[name="date"]').value||$('admin-date').value||config.today;
+ if(suggestedDate<config.today)suggestedDate=config.today;
+ const totalFor=row=>totals(config.services.filter(service=>manualServices(row).includes(service.id)));
+ if(previous){
+  const suggestedStart=manualStart(previous)+totalFor(previous).duration;
+  if(suggestedStart>=540&&suggestedStart<=1065)startInput.value=time(suggestedStart);
+ }else{
+  for(let offset=0;offset<7;offset++){
+   const candidate=endDate(suggestedDate,offset);
+   const [firstSlot]=slots(candidate,15,[]);
+   if(firstSlot){
+    suggestedDate=candidate;
+    startInput.value=firstSlot;
+    break;
+   }
+  }
+ }
+ dateInput.value=suggestedDate;
+ entry.oninput=()=>{
+  const {duration,price}=totalFor(entry),end=manualStart(entry)+duration;
+  entry.querySelector('[data-total]').textContent=duration?`${duration} min · ${money(price)}${Number.isFinite(end)?' · Término às '+time(end):''}`:'';
+ };
+ entry.querySelector('[data-remove]').onclick=()=>{
+  entry.remove();
+  updateManualEntries();
+  $('add-manual').focus();
+ };
+ entries.append(entry);
+ updateManualEntries();
+ entry.querySelector('[name="name"]').focus();
+}
+$('add-manual').onclick=addManualEntry;
+$('close-manual').onclick=()=>$('manual-dialog').close();
+$('manual-dialog').oncancel=e=>{if($('save-manual').disabled)e.preventDefault();};
+$('manual-form').onsubmit=async e=>{
+ e.preventDefault();
+ const entries=[...$('manual-entries').children],error=$('manual-error');
+ const appointments=entries.map(entry=>({
+  name:entry.querySelector('[name="name"]').value,
+  phone:entry.querySelector('[name="phone"]').value,
+  date:entry.querySelector('[name="date"]').value,
+  start:manualStart(entry),
+  services:manualServices(entry),
+  whatsappConsent:entry.querySelector('[name="whatsappConsent"]').checked
+ }));
+ error.textContent='';
+ const missing=appointments.findIndex(a=>!a.services.length);
+ if(missing>=0){
+  error.textContent=`Selecione pelo menos um serviço para a cliente ${missing+1}.`;
+  entries[missing].querySelector('[data-manual-service]').focus();
+  return;
+ }
+ const controls=[...$('manual-form').elements].filter(control=>!control.disabled);
+ controls.forEach(control=>control.disabled=true);
+ try{
+  const {notificationsPrepared}=await api('admin/appointments',{appointments},true);
+  $('manual-dialog').close();
+  $('admin-date').value=appointments.map(a=>a.date).sort()[0];
+  const message=appointments.length===1?'Atendimento registrado.':`${appointments.length} atendimentos registrados.`;
+  toast(message+notificationNotice(notificationsPrepared));
+  await loadAppointments();
+ }catch(e){error.textContent=e.message;}
+ finally{controls.forEach(control=>control.disabled=false);}
+};
+const editConsentLabel=document.createElement('label');
+editConsentLabel.className='d-block mb-3';
+editConsentLabel.innerHTML='<input type="checkbox" id="edit-consent"> A cliente autorizou receber atualizações deste atendimento pelo WhatsApp.';
+$('appointment-fields').append(editConsentLabel);
+function editAppointment(a=null,kind='appointment'){
+ kind=a?.kind||kind;
+ $('appointment-form').reset();
+ $('appointment-error').textContent='';
+ $('edit-id').value=a?.id||'';
+ $('edit-kind').value=kind;
+ $('dialog-title').textContent=kind==='block'?'Bloquear horário':'Alterar atendimento';
+ $('dialog-help').textContent=kind==='block'?'Use para pausas e compromissos.':'Selecione os serviços que serão executados neste atendimento.';
+ $('appointment-fields').hidden=kind==='block';
+ $('block-fields').hidden=kind!=='block';
+ $('edit-name').required=kind==='appointment';
+ $('edit-phone').required=kind==='appointment';
+ $('edit-services').innerHTML=checks(config.services,a?.services.map(s=>s.id)||[],'edit-service');
+ $('edit-services').onchange=updateEditTotal;
+ updateEditTotal();
+ $('edit-name').value=a?.client_name||'';
+ $('edit-phone').value=a?.client_phone||'';
+ editConsentLabel.hidden=kind==='block'||Boolean(a?.quote_id);
+ $('edit-consent').checked=Boolean(a?.whatsapp_consent_at);
+ $('edit-phone').oninput=()=>{$('edit-consent').checked=false;};
+ $('edit-date').min=config.today;
+ $('edit-date').value=a?.date||$('admin-date').value||config.today;
+ $('edit-time').value=a?time(a.start):'09:00';
+ $('edit-duration').value=a?a.end-a.start:60;
+ $('appointment-dialog').showModal();
+}
 function checked(prefix){return [...document.querySelectorAll(`[data-${prefix}]:checked`)].map(x=>x.value);}
 function updateEditTotal(){const ids=checked('edit-service'),total=totals(config.services.filter(s=>ids.includes(s.id)));$('edit-total').textContent=`${total.duration} min · ${money(total.price)}`;}
 $('close-dialog').onclick=()=>$('appointment-dialog').close();
-$('appointment-form').onsubmit=async e=>{e.preventDefault();const [h,m]=$('edit-time').value.split(':').map(Number);$('save-appointment').disabled=true;$('appointment-error').textContent='';try{await api('admin/appointment',{id:$('edit-id').value,kind:$('edit-kind').value,services:checked('edit-service'),name:$('edit-name').value,phone:$('edit-phone').value,date:$('edit-date').value,start:h*60+m,duration:Number($('edit-duration').value)},true);$('appointment-dialog').close();toast('Agenda atualizada.');await loadAppointments();}catch(e){$('appointment-error').textContent=e.message;}finally{$('save-appointment').disabled=false;}};
+$('appointment-form').onsubmit=async e=>{e.preventDefault();const [h,m]=$('edit-time').value.split(':').map(Number);$('save-appointment').disabled=true;$('appointment-error').textContent='';try{await api('admin/appointment',{id:$('edit-id').value,kind:$('edit-kind').value,services:checked('edit-service'),name:$('edit-name').value,phone:$('edit-phone').value,date:$('edit-date').value,start:h*60+m,duration:Number($('edit-duration').value),whatsappConsent:$('edit-consent').checked},true);$('appointment-dialog').close();toast('Agenda atualizada.');await loadAppointments();}catch(e){$('appointment-error').textContent=e.message;}finally{$('save-appointment').disabled=false;}};
 $('cancel-back').onclick=()=>$('cancel-dialog').close();
-$('cancel-confirm').onclick=async()=>{$('cancel-confirm').disabled=true;try{const r=cancelByClient?await api('cancel',{id:$('status-id').value.trim(),token:$('status-token').value.trim(),reason:$('cancel-reason').value}):await api('admin/appointment',{action:'cancel',id:cancelId,reason:$('cancel-reason').value},true);$('cancel-dialog').close();toast('Cancelamento registrado.'+notificationNotice(r.notification));if(cancelByClient){await checkStatus();await loadCalendar();}else{await loadAppointments();await loadQuotes();}}catch(e){$('cancel-error').textContent=e.message;}finally{$('cancel-confirm').disabled=false;}};
+$('cancel-confirm').onclick=async()=>{$('cancel-confirm').disabled=true;try{const r=cancelByClient?await api('cancel',{id:$('status-id').value.trim(),token:$('status-token').value.trim(),reason:$('cancel-reason').value}):await api('admin/appointment',{action:'cancel',id:cancelId,reason:$('cancel-reason').value},true);$('cancel-dialog').close();toast('Cancelamento registrado.'+notificationNotice(!cancelByClient&&r.notificationPrepared));if(cancelByClient){await checkStatus();await loadCalendar();}else{await loadAppointments();await loadQuotes();}}catch(e){$('cancel-error').textContent=e.message;}finally{$('cancel-confirm').disabled=false;}};
 
 
 async function loadQuotes(){$('quotes-error').textContent='';try{quotes=await api('admin/quotes',null,true);renderQuotes();}catch(e){$('quotes-error').textContent=e.message;}}
@@ -60,7 +196,7 @@ function renderQuotes(){const filter=$('quote-filter').value,list=quotes.filter(
 $('refresh-quotes').onclick=loadQuotes;$('quote-filter').onchange=renderQuotes;
 function openDecision(q){decisionQuote=q;$('decision-form').reset();$('decision-error').textContent='';$('decision-client').textContent=q.client_name+' · '+q.client_phone;$('decision-slot').textContent=formatDate(q.date)+' · início: '+time(q.start);$('decision-services').innerHTML=checks(q.services,q.services.map(s=>s.id),'approve-service');$('decision-services').onchange=updateDecisionTotal;updateDecisionTotal();$('decision-dialog').showModal();}
 function updateDecisionTotal(){const ids=checked('approve-service'),t=totals(decisionQuote.services.filter(s=>ids.includes(s.id)));$('decision-total').textContent=`${ids.length} serviço(s) aprovado(s) · ${t.duration} min · ${money(t.price)} · término ${time(decisionQuote.start+t.duration)}`;$('approve-quote').disabled=!ids.length;}
-async function decide(action){$('decision-error').textContent='';$('approve-quote').disabled=true;$('reject-quote').disabled=true;try{const result=await api('admin/decision',{id:decisionQuote.id,action,services:checked('approve-service'),note:$('decision-note').value},true);$('decision-dialog').close();toast((action==='approve'?'Orçamento aprovado e agenda atualizada.':'Orçamento não aprovado.')+notificationNotice(result.notification));await loadQuotes();await loadAppointments();}catch(e){$('decision-error').textContent=e.message;}finally{$('reject-quote').disabled=false;updateDecisionTotal();}}
+async function decide(action){$('decision-error').textContent='';$('approve-quote').disabled=true;$('reject-quote').disabled=true;try{const result=await api('admin/decision',{id:decisionQuote.id,action,services:checked('approve-service'),note:$('decision-note').value},true);$('decision-dialog').close();toast((action==='approve'?'Orçamento aprovado e agenda atualizada.':'Orçamento não aprovado.')+notificationNotice(result.notificationPrepared));await loadQuotes();await loadAppointments();}catch(e){$('decision-error').textContent=e.message;}finally{$('reject-quote').disabled=false;updateDecisionTotal();}}
 $('decision-form').onsubmit=e=>{e.preventDefault();decide('approve');};$('reject-quote').onclick=()=>decide('reject');$('close-decision').onclick=()=>$('decision-dialog').close();
 function bindRemove(){document.querySelectorAll('[data-remove]').forEach(b=>b.onclick=()=>{if(document.querySelectorAll('[data-editor]').length===1){toast('Mantenha pelo menos um serviço.');return;}b.closest('[data-editor]').remove();});}
 function renderEditor(){$('service-editor').innerHTML=config.services.map(serviceEditor).join('');bindRemove();}
@@ -73,6 +209,43 @@ async function init(){$('client-view').hidden=isAdmin;$('admin-view').hidden=!is
 document.addEventListener('visibilitychange',async()=>{if(!document.hidden&&config&&!isAdmin){try{config=await api('catalog');selectedIds=selectedIds.filter(id=>config.services.some(s=>s.id===id));renderServices();await loadCalendar();}catch{}}});
 init();
 
-const notificationLabels={pending:'Aguardando envio',awaiting_config:'Aguardando configuração',sending:'Envio em processamento',accepted:'Aceita pela Meta (entrega não confirmada)',failed:'Falha no envio',unknown:'Resultado incerto: conferir na Meta',skipped_no_consent:'Não enviada: sem autorização registrada',superseded:'Não enviada: atendimento cancelado'};
-async function loadNotifications(){$('notification-error').textContent='';try{const r=await api('admin/notifications',null,true);$('notification-config').textContent=r.configured?'Integração configurada no servidor.':'Envio automático ainda não ativado. Configure a Meta Cloud API conforme o guia entregue.';$('notifications-list').innerHTML=r.entries.length?r.entries.map(n=>`<article class="quote-card"><span class="status-label">${notificationLabels[n.status]}</span><h3 class="mt-3">${n.event==='approval'?'Aprovação de orçamento':'Confirmação de cancelamento'}</h3><p>Destino: ${esc(n.phone)}</p><p class="decision-note">${esc(n.payload.content)}</p>${n.error?`<p class="text-danger">${esc(n.error)}</p>`:''}${r.configured&&['pending','awaiting_config','failed'].includes(n.status)?`<button class="btn btn-outline-plum" data-retry-notification="${esc(n.id)}">Tentar enviar</button>`:''}</article>`).join(''):'<div class="empty-state">Nenhuma notificação registrada.</div>';document.querySelectorAll('[data-retry-notification]').forEach(b=>b.onclick=async()=>{b.disabled=true;try{await api('admin/notification-retry',{id:b.dataset.retryNotification},true);await loadNotifications();}catch(e){$('notification-error').textContent=e.message;b.disabled=false;}});}catch(e){$('notification-error').textContent=e.message;}}
+let notificationFocus=null;
+const notificationLabels={pending:'Pendente',manual_sent:'Envio registrado pela profissional',sending:'Envio anterior em processamento',accepted:'Aceita pela Meta no fluxo anterior',unknown:'Envio anterior com resultado incerto',skipped_no_consent:'Sem autorização registrada',superseded:'Mensagem indisponível'};
+const notificationEvents={approval:'Aprovação de orçamento',cancellation:'Cancelamento',manual_confirmation:'Confirmação de agendamento manual',reminder:'Lembrete de atendimento'};
+function notificationCard(message){
+ const {id,event,phone,status,actionable,content}=message;
+ const actionLabel={approval:'Enviar aprovação',cancellation:'Enviar cancelamento',manual_confirmation:'Enviar confirmação',reminder:'Enviar lembrete'}[event];
+ const link='https://wa.me/'+encodeURIComponent(phone)+'?text='+encodeURIComponent(content);
+ return `<article class="quote-card">
+  <span class="status-label">${notificationLabels[status]}</span>
+  <h3 class="mt-3">${notificationEvents[event]}</h3>
+  <p>Destino: ${esc(phone)}</p><p class="decision-note">${esc(content)}</p>
+  ${actionable?`<div class="d-flex flex-wrap gap-2">
+   <a class="btn btn-whatsapp" href="${esc(link)}" target="_blank" rel="noopener noreferrer">${actionLabel}</a>
+   <button type="button" class="btn btn-outline-plum" data-mark-sent="${esc(id)}">Marcar como enviado</button>
+  </div>`:''}
+ </article>`;
+}
+async function loadNotifications(){
+ $('notification-error').textContent='';
+ try{
+  const {entries}=await api('admin/notifications/refresh',{},true);
+  const reminders=entries.filter(entry=>entry.event==='reminder'&&entry.actionable);
+  const other=entries.filter(entry=>entry.event!=='reminder'||!entry.actionable);
+  $('notifications-list').innerHTML=`<h3>Lembretes pendentes</h3>
+   ${reminders.length?reminders.map(notificationCard).join(''):'<p class="muted">Nenhum lembrete pendente para as próximas 24 horas.</p>'}
+   <h3 class="mt-4">Outras mensagens e histórico</h3>
+   ${other.length?other.map(notificationCard).join(''):'<p class="muted">Nenhuma outra mensagem registrada.</p>'}`;
+  if(notificationFocus){
+   const card=[...document.querySelectorAll('[data-notification-id]')].find(element=>element.dataset.notificationId===notificationFocus);
+   card?.focus();
+   notificationFocus=null;
+  }
+  document.querySelectorAll('[data-mark-sent]').forEach(button=>button.onclick=async()=>{
+   button.disabled=true;
+   try{await api('admin/notifications/sent',{id:button.dataset.markSent},true);await loadNotifications();}
+   catch(e){$('notification-error').textContent=e.message;button.disabled=false;}
+  });
+ }catch(e){$('notification-error').textContent=e.message;}
+}
 $('refresh-notifications').onclick=loadNotifications;
